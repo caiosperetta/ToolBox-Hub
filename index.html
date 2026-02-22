@@ -162,6 +162,12 @@
 
     <!-- Lógica da Aplicação -->
     <script>
+        // --- Configurações das APIs ---
+        const API_KEYS = {
+            gemini: "AIzaSyCVsdiWuClgi6lTy60z8WxbB6WdBDP6b68",   // COLOQUE AQUI SUA CHAVE DA API DO GEMINI
+            removeBg: "JJDthm5izRs2ictzJa7UZueG"  // COLOQUE AQUI SUA CHAVE DA API DO REMOVE.BG
+        };
+
         // --- Utilitários Globais ---
         const utils = {
             copyToClipboard: (text) => {
@@ -192,6 +198,19 @@
                 const sizes = ['Bytes', 'KB', 'MB'];
                 const i = Math.floor(Math.log(bytes) / Math.log(k));
                 return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            },
+            callGemini: async (prompt) => {
+                if (!API_KEYS.gemini) throw new Error("Chave da API do Gemini não configurada no topo do código.");
+                const fn = async () => {
+                    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEYS.gemini}`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                    });
+                    if (!response.ok) throw new Error("Falha na comunicação com a API do Gemini.");
+                    const data = await response.json();
+                    return data.candidates?.[0]?.content?.parts?.[0]?.text;
+                };
+                return await utils.executeWithRetry(fn, 3);
             }
         };
 
@@ -272,12 +291,30 @@
             `).join('');
                     };
 
-                    const generate = (e) => {
+                    const generate = async (e) => {
                         if (e) e.preventDefault();
-                        const idea = input.value;
-                        const seed = idea ? idea.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) : Math.random() * 1000;
-                        const newColors = Array.from({ length: 5 }).map((_, i) => hslToHex((seed * 137.5 + i * 72) % 360, 70, 60));
-                        renderColors(newColors);
+                        const idea = input.value || 'Paleta moderna e harmoniosa';
+                        const btn = form.querySelector('button');
+                        const originalText = btn.innerText;
+                        btn.innerText = 'Gerando...';
+                        btn.disabled = true;
+                        try {
+                            const prompt = `Aja como um web designer profissional. Crie uma paleta de 5 cores perfeitas para o tema: "${idea}". Retorne APENAS um array JSON válido com as 5 cores em formato HEX (ex: ["#1A2B3C", "#ABCDEF", ...]). Não escreva mais nada.`;
+                            const res = await utils.callGemini(prompt);
+                            const cleanJson = res.replace(/```json/g, '').replace(/```/g, '').trim();
+                            const newColors = JSON.parse(cleanJson);
+                            if (Array.isArray(newColors) && newColors.length >= 5) {
+                                renderColors(newColors.slice(0, 5));
+                            } else throw new Error("Formato inválido");
+                        } catch (err) {
+                            // Fallback para caso a API falhe ou não tenha chave configurada
+                            const seed = idea ? idea.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) : Math.random() * 1000;
+                            const newColors = Array.from({ length: 5 }).map((_, i) => hslToHex((seed * 137.5 + i * 72) % 360, 70, 60));
+                            renderColors(newColors);
+                        } finally {
+                            btn.innerText = originalText;
+                            btn.disabled = false;
+                        }
                     };
 
                     form.addEventListener('submit', generate);
@@ -370,7 +407,7 @@
                   <img id="bgr-original" class="w-64 h-64 object-cover rounded-2xl shadow-sm border bg-white" />
                 </div>
                 <div class="flex flex-col items-center gap-4">
-                  <button id="bgr-btn" class="bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2">Remover Fundo</button>
+                  <button id="bgr-btn" class="bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2">Remover Fundo ✨</button>
                   <div id="bgr-loading" class="hidden flex-col items-center text-cyan-600 gap-2">
                     <i data-lucide="refresh-cw" class="w-8 h-8 animate-spin"></i>
                     <span class="text-sm font-semibold animate-pulse">Processando...</span>
@@ -427,28 +464,32 @@
                     });
 
                     btn.addEventListener('click', async () => {
+                        if (!API_KEYS.removeBg) { errorMsg.innerText = 'API Key do remove.bg não configurada no topo do código.'; errorMsg.classList.remove('hidden'); return; }
+                        const file = fileInput.files[0];
+                        if (!file) return;
                         btn.classList.add('hidden'); loading.classList.remove('hidden'); loading.classList.add('flex'); errorMsg.classList.add('hidden');
                         try {
-                            const apiKey = "AIzaSyCVsdiWuClgi6lTy60z8WxbB6WdBDP6b68";
-                            const fn = async () => {
-                                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`, {
-                                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({
-                                        contents: [{ role: "user", parts: [{ text: "Remove the background of this image perfectly. Output ONLY the foreground subject with a transparent background." }, { inlineData: { mimeType: mimeType, data: base64Data } }] }],
-                                        generationConfig: { responseModalities: ["IMAGE"] }
-                                    })
-                                });
-                                if (!response.ok) throw new Error();
-                                const data = await response.json();
-                                const imgData = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData;
-                                if (!imgData) throw new Error();
-                                return `data:${imgData.mimeType};base64,${imgData.data}`;
-                            };
-                            const res = await utils.executeWithRetry(fn);
-                            imgRes.src = res; btnDown.href = res;
+                            const formData = new FormData();
+                            formData.append('image_file', file);
+                            formData.append('size', 'auto');
+
+                            const response = await fetch('https://api.remove.bg/v1.0/removebg', {
+                                method: 'POST',
+                                headers: { 'X-API-Key': API_KEYS.removeBg },
+                                body: formData
+                            });
+
+                            if (!response.ok) {
+                                const errorData = await response.json();
+                                throw new Error(errorData.errors?.[0]?.title || 'Erro desconhecido ao remover fundo.');
+                            }
+                            const blob = await response.blob();
+                            const objUrl = URL.createObjectURL(blob);
+
+                            imgRes.src = objUrl; btnDown.href = objUrl;
                             imgRes.classList.remove('hidden'); placeholder.classList.add('hidden'); btnDown.classList.remove('hidden'); btnDown.classList.add('flex');
                         } catch (e) {
-                            errorMsg.innerText = 'Erro ao processar imagem via API Gemini.'; errorMsg.classList.remove('hidden'); btn.classList.remove('hidden');
+                            errorMsg.innerText = 'Erro: ' + e.message; errorMsg.classList.remove('hidden'); btn.classList.remove('hidden');
                         } finally {
                             loading.classList.add('hidden'); loading.classList.remove('flex');
                         }
@@ -512,13 +553,13 @@
                 }
             },
             {
-                id: 'decision', title: 'Decisões', icon: 'brain-circuit', color: 'bg-slate-700',
+                id: 'decision', title: 'Decisões IA', icon: 'brain-circuit', color: 'bg-slate-700',
                 html: () => `
           <div class="p-8 max-w-3xl mx-auto flex flex-col min-h-full">
             <h2 class="text-2xl font-bold mb-2 flex items-center gap-2"><i data-lucide="brain-circuit" class="text-slate-700"></i> Tomador de Decisões IA</h2>
             <p class="text-sm text-gray-500 mb-8">Descreva seu dilema. A IA atuará como seu mentor estoico e pessoal.</p>
             <textarea id="dm-input" placeholder="Ex: Devo pedir demissão do meu emprego chato?" class="w-full h-32 p-5 border rounded-2xl outline-none mb-6 resize-none"></textarea>
-            <button id="dm-btn" class="w-full bg-slate-800 text-white font-bold py-4 rounded-xl shadow-lg mb-8">Consultar o Mestre</button>
+            <button id="dm-btn" class="w-full bg-slate-800 text-white font-bold py-4 rounded-xl shadow-lg mb-8 transition-transform active:scale-95">Consultar o Mestre ✨</button>
             <div id="dm-loading" class="hidden flex-col items-center justify-center text-slate-400 opacity-70 mb-8"><i data-lucide="brain-circuit" class="w-12 h-12 animate-pulse mb-4"></i><p>Analisando...</p></div>
             <div id="dm-result" class="hidden bg-slate-50 border p-8 rounded-3xl shadow-sm relative overflow-hidden animate-slide-up whitespace-pre-wrap text-slate-700 leading-relaxed border-l-8 border-l-slate-700"></div>
           </div>`,
@@ -532,15 +573,10 @@
                         const val = input.value.trim(); if (!val) return;
                         btn.disabled = true; loading.classList.remove('hidden'); loading.classList.add('flex'); result.classList.add('hidden');
                         try {
-                            const apiKey = "AIzaSyCVsdiWuClgi6lTy60z8WxbB6WdBDP6b68";
-                            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
-                                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ contents: [{ parts: [{ text: `Assuma a persona de um mentor sábio, estóico e brutalmente honesto. O usuário tem o dilema: "${val}". Faça uma análise prós/contras e finalize com uma recomendação filosófica.` }] }] })
-                            });
-                            const data = await response.json();
-                            result.innerText = data.candidates?.[0]?.content?.parts?.[0]?.text || 'Falha no oráculo.';
+                            const res = await utils.callGemini(`Assuma a persona de um mentor sábio, estóico e brutalmente honesto. O usuário tem o dilema: "${val}". Faça uma análise prós/contras e finalize com uma recomendação filosófica.`);
+                            result.innerText = res || 'Falha no oráculo.';
                             result.classList.remove('hidden');
-                        } catch (e) { result.innerText = 'Erro de API.'; result.classList.remove('hidden'); }
+                        } catch (e) { result.innerText = 'Erro: ' + e.message; result.classList.remove('hidden'); }
                         finally { btn.disabled = false; loading.classList.add('hidden'); loading.classList.remove('flex'); }
                     });
                 }
@@ -715,11 +751,11 @@
                 id: 'projname', title: 'Nomes Projetos', icon: 'lightbulb', color: 'bg-amber-400',
                 html: () => `
           <div class="p-8 max-w-3xl mx-auto flex flex-col h-full">
-            <h2 class="text-2xl font-bold mb-2 flex items-center gap-2"><i data-lucide="lightbulb" class="text-amber-400"></i> Nomes para Projetos</h2>
+            <h2 class="text-2xl font-bold mb-2 flex items-center gap-2"><i data-lucide="lightbulb" class="text-amber-400"></i> Nomes para Projetos IA</h2>
             <p class="text-gray-500 mb-8 text-sm">Descreva sua ideia e a IA do Gemini criará nomes modernos e marcantes.</p>
             <form id="proj-form" class="flex gap-3 mb-10">
               <input type="text" id="proj-input" placeholder="Ex: App de delivery saudável" class="flex-1 p-4 border rounded-xl outline-none focus:ring-2 focus:ring-amber-300 shadow-sm text-lg" required />
-              <button type="submit" id="proj-btn" class="bg-amber-500 hover:bg-amber-600 text-white font-bold px-8 py-4 rounded-xl shadow-md transition-transform flex items-center gap-2">Gerar Nomes</button>
+              <button type="submit" id="proj-btn" class="bg-amber-500 hover:bg-amber-600 text-white font-bold px-8 py-4 rounded-xl shadow-md transition-transform flex items-center gap-2 active:scale-95">Gerar Nomes ✨</button>
             </form>
             <div id="proj-loading" class="hidden flex-col items-center justify-center text-amber-500 opacity-70 mb-8">
               <i data-lucide="refresh-cw" class="w-10 h-10 animate-spin mb-4"></i>
@@ -741,24 +777,18 @@
                         const val = input.value.trim(); if (!val) return;
                         btn.disabled = true; loading.classList.remove('hidden'); loading.classList.add('flex'); results.innerHTML = '';
                         try {
-                            const apiKey = "AIzaSyCVsdiWuClgi6lTy60z8WxbB6WdBDP6b68";
-                            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
-                                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ contents: [{ parts: [{ text: `Aja como especialista em branding. A ideia é: "${val}". Gere 5 nomes muito criativos e curtos. Retorne APENAS a lista, um por linha, sem números ou introdução.` }] }] })
-                            });
-                            const data = await response.json();
-                            const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                            const names = text.split('\n').map(n => n.trim()).filter(n => n.length > 0);
+                            const text = await utils.callGemini(`Aja como especialista em branding. A ideia é: "${val}". Gere 5 nomes muito criativos e curtos. Retorne APENAS a lista, um por linha, sem números ou introdução.`) || '';
+                            const names = text.split('\n').map(n => n.trim().replace(/^[*-]\s*/, '').replace(/^\d+\.\s*/, '')).filter(n => n.length > 0);
 
                             results.innerHTML = names.map(n => `
                 <div class="bg-amber-50 border border-amber-100 p-6 rounded-2xl flex items-center justify-between group hover:bg-amber-100 transition-colors shadow-sm">
                    <span class="font-bold text-xl text-gray-800 tracking-tight">${n}</span>
-                   <button onclick="app.projCopy('${n}')" class="opacity-0 group-hover:opacity-100 bg-white text-amber-600 border border-amber-200 p-2 rounded shadow"><i data-lucide="copy" class="w-4 h-4"></i></button>
+                   <button onclick="app.projCopy('${n.replace(/'/g, "\\'")}')" class="opacity-0 group-hover:opacity-100 bg-white text-amber-600 border border-amber-200 p-2 rounded shadow"><i data-lucide="copy" class="w-4 h-4"></i></button>
                 </div>
               `).join('');
                             lucide.createIcons();
                         } catch (err) {
-                            results.innerHTML = '<p class="text-red-500 font-bold">Erro ao conectar com a IA.</p>';
+                            results.innerHTML = `<p class="text-red-500 font-bold">Erro: ${err.message}</p>`;
                         } finally {
                             btn.disabled = false; loading.classList.add('hidden'); loading.classList.remove('flex');
                         }
@@ -951,14 +981,14 @@
                 }
             },
             {
-                id: 'mindmap', title: 'Mapa Mental', icon: 'network', color: 'bg-sky-500',
+                id: 'mindmap', title: 'Mapa Mental IA', icon: 'network', color: 'bg-sky-500',
                 html: () => `
           <div class="p-8 max-w-4xl mx-auto flex flex-col h-full">
             <h2 class="text-2xl font-bold mb-2 flex items-center gap-2"><i data-lucide="network" class="text-sky-500"></i> Mapa Mental Automático</h2>
             <p class="text-gray-500 mb-6 text-sm">A Inteligência Artificial vai quebrar o seu tema em ramificações lógicas.</p>
             <form id="mm-form" class="flex flex-col sm:flex-row gap-3 mb-8">
               <input type="text" id="mm-input" placeholder="Tema (Ex: IA na Medicina)" class="flex-1 p-4 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-sky-300 bg-white shadow-sm" required />
-              <button type="submit" id="mm-btn" class="bg-sky-500 hover:bg-sky-600 text-white font-bold px-8 py-4 rounded-xl flex items-center justify-center gap-2 shadow-md transition-all whitespace-nowrap">Gerar Mapa Mental</button>
+              <button type="submit" id="mm-btn" class="bg-sky-500 hover:bg-sky-600 text-white font-bold px-8 py-4 rounded-xl flex items-center justify-center gap-2 shadow-md transition-all whitespace-nowrap active:scale-95">Gerar Mapa Mental ✨</button>
             </form>
             <div id="mm-loading" class="hidden flex-1 items-center justify-center text-sky-600 font-medium animate-pulse"><i data-lucide="refresh-cw" class="w-6 h-6 animate-spin mr-2 inline"></i>A IA está estruturando...</div>
             <div id="mm-result-box" class="hidden bg-slate-900 border border-slate-800 shadow-xl p-8 rounded-3xl w-full flex-1 overflow-auto relative group">
@@ -979,16 +1009,11 @@
                         const topic = input.value.trim(); if (!topic) return;
                         btn.disabled = true; resultBox.classList.add('hidden'); loading.classList.remove('hidden'); loading.classList.add('flex');
                         try {
-                            const apiKey = "AIzaSyCVsdiWuClgi6lTy60z8WxbB6WdBDP6b68";
-                            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
-                                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ contents: [{ parts: [{ text: `Aja como um especialista em organização. Crie um mapa mental sobre o tema: "${topic}". Retorne ESTRITAMENTE em formato de listas Markdown aninhadas (-). Seja detalhado. Não adicione textos de introdução.` }] }] })
-                            });
-                            const data = await response.json();
-                            output.innerText = data.candidates?.[0]?.content?.parts?.[0]?.text || 'Erro de formatação.';
+                            const res = await utils.callGemini(`Aja como um especialista em organização. Crie um mapa mental sobre o tema: "${topic}". Retorne ESTRITAMENTE em formato de listas Markdown aninhadas (-). Seja detalhado. Não adicione textos de introdução.`);
+                            output.innerText = res || 'Erro de formatação.';
                             resultBox.classList.remove('hidden');
                         } catch (err) {
-                            output.innerText = 'Falha ao conectar com a IA.'; resultBox.classList.remove('hidden');
+                            output.innerText = 'Erro: ' + err.message; resultBox.classList.remove('hidden');
                         } finally {
                             btn.disabled = false; loading.classList.add('hidden'); loading.classList.remove('flex');
                         }
@@ -1245,6 +1270,165 @@
                         wSpace.classList.add('hidden'); uArea.classList.remove('hidden'); uArea.classList.add('flex');
                     });
                 }
+            },
+            {
+                id: 'regexai', title: 'Gerador Regex IA', icon: 'brackets', color: 'bg-teal-600',
+                html: () => `
+          <div class="p-8 max-w-4xl mx-auto flex flex-col h-full">
+            <h2 class="text-2xl font-bold mb-2 flex items-center gap-2"><i data-lucide="brackets" class="text-teal-600"></i> Gerador de Regex com IA</h2>
+            <p class="text-gray-500 mb-6 text-sm">Dificuldade com Expressões Regulares? Diga o que você quer validar ou buscar, e a IA cria o código para você.</p>
+            <form id="rx-form" class="flex flex-col sm:flex-row gap-3 mb-8">
+              <input type="text" id="rx-input" placeholder="Ex: Validar uma placa de carro Mercosul..." class="flex-1 p-4 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-teal-300 bg-white shadow-sm" required />
+              <button type="submit" id="rx-btn" class="bg-teal-600 hover:bg-teal-700 text-white font-bold px-8 py-4 rounded-xl flex items-center justify-center gap-2 shadow-md transition-all whitespace-nowrap active:scale-95">Gerar Regex ✨</button>
+            </form>
+            <div id="rx-loading" class="hidden flex-1 items-center justify-center text-teal-600 font-medium animate-pulse"><i data-lucide="refresh-cw" class="w-6 h-6 animate-spin mr-2 inline"></i>A IA está codificando a lógica...</div>
+            <div id="rx-result-box" class="hidden flex-col gap-4 animate-slide-up w-full flex-1">
+               <div class="relative group">
+                 <span class="text-xs font-bold text-gray-400 uppercase tracking-widest block mb-2">Expressão Regular Gerada</span>
+                 <button id="rx-copy" class="absolute top-8 right-4 bg-teal-100 text-teal-800 p-2 rounded shadow opacity-0 group-hover:opacity-100 transition"><i data-lucide="copy" class="w-4 h-4"></i></button>
+                 <textarea id="rx-code" readonly class="w-full p-6 text-xl bg-gray-900 text-teal-400 font-mono rounded-2xl outline-none border border-gray-800 shadow-inner resize-none min-h-[100px] text-center flex items-center"></textarea>
+               </div>
+               <div class="bg-teal-50 border border-teal-100 p-6 rounded-2xl text-teal-900 whitespace-pre-wrap leading-relaxed">
+                 <span class="text-xs font-bold text-teal-600 uppercase tracking-widest block mb-2">Como Funciona:</span>
+                 <span id="rx-explanation"></span>
+               </div>
+            </div>
+          </div>`,
+                init: () => {
+                    const form = document.getElementById('rx-form');
+                    const input = document.getElementById('rx-input');
+                    const btn = document.getElementById('rx-btn');
+                    const loading = document.getElementById('rx-loading');
+                    const resultBox = document.getElementById('rx-result-box');
+                    const codeOut = document.getElementById('rx-code');
+                    const expOut = document.getElementById('rx-explanation');
+
+                    form.addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const intent = input.value.trim(); if (!intent) return;
+                        btn.disabled = true; resultBox.classList.add('hidden'); loading.classList.remove('hidden'); loading.classList.add('flex');
+                        try {
+                            const res = await utils.callGemini(`Aja como um programador sênior especialista em RegEx. O usuário quer criar a seguinte Expressão Regular: "${intent}". Retorne o resultado ESTRITAMENTE no seguinte formato: na primeira linha, apenas a regex crua e pura (sem aspas ou crases ou formatacao markdown ao redor). A partir da segunda linha, forneça uma explicação muito concisa sobre o que cada parte principal faz.`) || '';
+
+                            // O LLM as vezes coloca crases. Vamos limpar a primeira linha e pegar o resto.
+                            let lines = res.split('\n');
+                            let rawRegex = lines[0].replace(/`/g, '').trim();
+                            let explanation = lines.slice(1).join('\n').trim();
+
+                            // Se a primeira linha estiver vazia por causa de um formato Markdown ruim
+                            if (!rawRegex && lines.length > 1) {
+                                rawRegex = lines[1].replace(/`/g, '').trim();
+                                explanation = lines.slice(2).join('\n').trim();
+                            }
+
+                            codeOut.value = rawRegex || 'Erro ao extrair regex.';
+                            expOut.innerText = explanation || 'Sem explicação disponível.';
+
+                            resultBox.classList.remove('hidden'); resultBox.classList.add('flex');
+                        } catch (err) {
+                            codeOut.value = 'Erro: ' + err.message;
+                            expOut.innerText = '';
+                            resultBox.classList.remove('hidden'); resultBox.classList.add('flex');
+                        } finally {
+                            btn.disabled = false; loading.classList.add('hidden'); loading.classList.remove('flex');
+                        }
+                    });
+                    document.getElementById('rx-copy').addEventListener('click', () => utils.copyToClipboard(codeOut.value));
+                }
+            },
+            {
+                id: 'summarizer', title: 'Resumidor IA', icon: 'scissors', color: 'bg-blue-400',
+                html: () => `
+          <div class="p-8 max-w-5xl mx-auto flex flex-col h-full">
+            <h2 class="text-2xl font-bold mb-2 flex items-center gap-2"><i data-lucide="scissors" class="text-blue-500"></i> Resumidor de Textos IA</h2>
+            <p class="text-gray-500 mb-6 text-sm">Textos longos, e-mails chatos ou artigos? Cole abaixo e deixe a Inteligência Artificial extrair apenas os pontos principais.</p>
+            <div class="flex flex-col lg:flex-row gap-6 flex-1 min-h-[400px]">
+              <div class="flex-1 flex flex-col gap-4">
+                <textarea id="sum-input" placeholder="Cole o seu texto gigante aqui..." class="flex-1 p-5 border border-gray-200 rounded-2xl bg-white shadow-inner outline-none focus:ring-2 focus:ring-blue-300 resize-none leading-relaxed"></textarea>
+                <button id="sum-btn" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 rounded-xl shadow-md transition-transform active:scale-95 flex items-center justify-center gap-2">Resumir Texto ✨</button>
+              </div>
+              <div class="flex-1 relative flex flex-col">
+                <div id="sum-loading" class="hidden absolute inset-0 bg-white/80 backdrop-blur-sm z-20 flex-col items-center justify-center text-blue-500 rounded-2xl">
+                  <i data-lucide="refresh-cw" class="w-10 h-10 animate-spin mb-4"></i>
+                  <span class="font-bold">A IA está lendo e resumindo...</span>
+                </div>
+                <button id="sum-copy" class="absolute top-4 right-4 z-10 bg-blue-100 text-blue-800 p-2 rounded shadow hover:bg-blue-200 transition hidden"><i data-lucide="copy" class="w-4 h-4"></i></button>
+                <div id="sum-output" class="flex-1 p-6 border border-blue-100 rounded-2xl bg-blue-50 overflow-auto whitespace-pre-wrap text-blue-900 leading-relaxed font-medium">O seu resumo em tópicos aparecerá aqui.</div>
+              </div>
+            </div>
+          </div>`,
+                init: () => {
+                    const input = document.getElementById('sum-input');
+                    const btn = document.getElementById('sum-btn');
+                    const loading = document.getElementById('sum-loading');
+                    const output = document.getElementById('sum-output');
+                    const copyBtn = document.getElementById('sum-copy');
+
+                    btn.addEventListener('click', async () => {
+                        const text = input.value.trim(); if (!text) return;
+                        btn.disabled = true; loading.classList.remove('hidden'); loading.classList.add('flex'); copyBtn.classList.add('hidden');
+                        try {
+                            const res = await utils.callGemini(`Atue como um especialista em síntese. Faça um resumo muito direto e conciso, em tópicos, destacando APENAS as informações cruciais do seguinte texto:\n\n"${text}"`);
+                            output.innerText = res || 'Erro ao gerar resumo.';
+                            copyBtn.classList.remove('hidden');
+                        } catch (e) { output.innerText = 'Erro: ' + e.message; }
+                        finally { btn.disabled = false; loading.classList.add('hidden'); loading.classList.remove('flex'); }
+                    });
+                    copyBtn.addEventListener('click', () => utils.copyToClipboard(output.innerText));
+                }
+            },
+            {
+                id: 'codetrans', title: 'Tradutor de Código', icon: 'file-code', color: 'bg-indigo-400',
+                html: () => `
+          <div class="p-8 max-w-6xl mx-auto flex flex-col h-full">
+            <h2 class="text-2xl font-bold mb-2 flex items-center gap-2"><i data-lucide="file-code" class="text-indigo-500"></i> Tradutor de Código IA</h2>
+            <p class="text-gray-500 mb-6 text-sm">Converta scripts completos ou algoritmos de uma linguagem de programação para outra instantaneamente.</p>
+            <div class="flex flex-col lg:flex-row gap-6 h-full min-h-[500px]">
+              <div class="flex-1 flex flex-col gap-4">
+                <select id="ct-from" class="p-4 border border-gray-200 rounded-xl bg-gray-50 outline-none font-bold text-gray-700">
+                   <option value="Python">Python</option><option value="JavaScript" selected>JavaScript</option><option value="TypeScript">TypeScript</option><option value="Java">Java</option><option value="C++">C++</option><option value="C#">C#</option><option value="PHP">PHP</option><option value="Go">Go</option><option value="Rust">Rust</option>
+                </select>
+                <textarea id="ct-input" placeholder="Cole o código fonte aqui..." class="flex-1 p-5 border border-gray-200 rounded-2xl bg-white outline-none focus:ring-2 focus:ring-indigo-300 font-mono text-sm resize-none"></textarea>
+                <button id="ct-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl shadow-md transition-transform active:scale-95 flex items-center justify-center gap-2">Traduzir Código ✨</button>
+              </div>
+              <div class="flex items-center justify-center hidden lg:flex"><i data-lucide="arrow-right" class="text-indigo-300 w-8 h-8"></i></div>
+              <div class="flex-1 flex flex-col gap-4 relative">
+                <select id="ct-to" class="p-4 border border-gray-200 rounded-xl bg-gray-50 outline-none font-bold text-gray-700">
+                   <option value="Python" selected>Python</option><option value="JavaScript">JavaScript</option><option value="TypeScript">TypeScript</option><option value="Java">Java</option><option value="C++">C++</option><option value="C#">C#</option><option value="PHP">PHP</option><option value="Go">Go</option><option value="Rust">Rust</option>
+                </select>
+                <div class="flex-1 relative group h-full flex flex-col">
+                  <div id="ct-loading" class="hidden absolute inset-0 bg-gray-900/80 backdrop-blur-sm z-20 flex-col items-center justify-center text-indigo-400 rounded-2xl">
+                    <i data-lucide="refresh-cw" class="w-10 h-10 animate-spin mb-4"></i><span class="font-bold">Convertendo sintaxe...</span>
+                  </div>
+                  <button id="ct-copy" class="absolute top-4 right-4 z-10 bg-white/10 text-indigo-300 p-2 rounded hover:bg-white/20 transition hidden"><i data-lucide="copy" class="w-4 h-4"></i></button>
+                  <textarea id="ct-output" readonly placeholder="O código traduzido aparecerá aqui." class="flex-1 p-5 border border-gray-800 rounded-2xl bg-gray-900 text-indigo-300 outline-none font-mono text-sm resize-none w-full shadow-inner"></textarea>
+                </div>
+              </div>
+            </div>
+          </div>`,
+                init: () => {
+                    const input = document.getElementById('ct-input');
+                    const output = document.getElementById('ct-output');
+                    const from = document.getElementById('ct-from');
+                    const to = document.getElementById('ct-to');
+                    const btn = document.getElementById('ct-btn');
+                    const loading = document.getElementById('ct-loading');
+                    const copyBtn = document.getElementById('ct-copy');
+
+                    btn.addEventListener('click', async () => {
+                        const code = input.value.trim(); if (!code) return;
+                        btn.disabled = true; loading.classList.remove('hidden'); loading.classList.add('flex'); copyBtn.classList.add('hidden');
+                        output.value = '';
+                        try {
+                            const res = await utils.callGemini(`Atue como um Engenheiro de Software Sênior. Sua tarefa é traduzir perfeitamente o seguinte código escrito em ${from.value} para ${to.value}. Retorne APENAS o código puro e funcional, SEM NENHUM bloco de formatação Markdown (como \`\`\`python) e SEM explicações:\n\n${code}`);
+                            // Clean up markdown blocks if the LLM adds them despite the prompt
+                            output.value = (res || 'Erro.').replace(/^```[\w]*\n/, '').replace(/\n```$/, '');
+                            copyBtn.classList.remove('hidden');
+                        } catch (e) { output.value = 'Erro: ' + e.message; }
+                        finally { btn.disabled = false; loading.classList.add('hidden'); loading.classList.remove('flex'); }
+                    });
+                    copyBtn.addEventListener('click', () => utils.copyToClipboard(output.value));
+                }
             }
         ];
 
@@ -1262,7 +1446,8 @@
                 const grid = document.getElementById('tools-grid');
                 grid.innerHTML = toolsData.map(tool => `
           <div onclick="app.openTool('${tool.id}')" class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 cursor-pointer hover:shadow-lg hover:-translate-y-1 transition-all duration-300 flex flex-col items-center text-center group">
-            <div class="${tool.color} text-white p-4 rounded-2xl mb-4 group-hover:scale-110 transition-transform duration-300 shadow-sm">
+            <div class="${tool.color} text-white p-4 rounded-2xl mb-4 group-hover:scale-110 transition-transform duration-300 shadow-sm relative">
+              ${tool.title.includes('IA') ? '<span class="absolute -top-1 -right-2 text-xs bg-yellow-400 text-yellow-900 rounded-full px-1.5 font-black shadow shadow-yellow-200 animate-pulse">IA</span>' : ''}
               <i data-lucide="${tool.icon}" class="w-8 h-8 stroke-[1.5]"></i>
             </div>
             <h3 class="font-semibold text-gray-800">${tool.title}</h3>
